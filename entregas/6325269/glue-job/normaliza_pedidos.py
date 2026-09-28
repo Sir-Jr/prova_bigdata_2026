@@ -44,6 +44,7 @@ from datetime import datetime, timezone
 from pyspark.context import SparkContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.types import StructType, StructField, StringType, DateType, DoubleType, IntegerType
 
 # Imports específicos do Glue — disponíveis no runtime do AWS Glue.
 # No teste local eles não são usados (a lógica pura roda em SparkSession pura).
@@ -55,6 +56,21 @@ except ImportError:  # ambiente local sem o SDK do Glue
     GlueContext = None
     Job = None
     getResolvedOptions = None
+
+
+RAW_SCHEMA = StructType([
+    StructField("pedido_id", StringType(), True),
+    StructField("data_pedido", DateType(), True),
+    StructField("cliente_id", StringType(), True),
+    StructField("cliente_nome", StringType(), True),
+    StructField("cliente_uf", StringType(), True),
+    StructField("produto_id", StringType(), True),
+    StructField("produto_nome", StringType(), True),
+    StructField("categoria", StringType(), True),
+    StructField("preco_unitario", DoubleType(), True),
+    StructField("quantidade", IntegerType(), True),
+    StructField("valor_total", DoubleType(), True),
+])
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +239,7 @@ def ler_raw(spark: SparkSession, raw_path: str) -> DataFrame:
     Requirements: 6.3
     """
     # TODO(aluno): ler o CSV do raw_path (header=True, inferSchema ou schema explícito).
-    raise NotImplementedError("TODO(aluno): implementar ler_raw()")
+    return spark.read.csv(raw_path, schema=RAW_SCHEMA, header=True, mode="PERMISSIVE")
 
 
 def escrever_gold(tabelas: dict[str, DataFrame], gold_path: str) -> None:
@@ -241,9 +257,18 @@ def escrever_gold(tabelas: dict[str, DataFrame], gold_path: str) -> None:
 
     Requirements: 6.4, 6.6
     """
+    base = gold_path.rstrip("/")
     # TODO(aluno): gravar fato_pedidos em Parquet particionado por data_pedido.
+    (
+        tabelas["fato_pedidos"]
+        .repartition("data_pedido")
+        .write.mode("overwrite")
+        .partitionBy("data_pedido")
+        .parquet(base + "/fato_pedidos")
+    )
     # TODO(aluno): gravar dim_cliente e dim_produto em Parquet (sem partição).
-    raise NotImplementedError("TODO(aluno): implementar escrever_gold()")
+    for nome in ("dim_cliente", "dim_produto"):
+        tabelas[nome].coalesce(1).write.mode("overwrite").parquet(base + "/" + nome)
 
 
 def gravar_metadados_dynamo(item: dict, ddb_table: str) -> None:
@@ -256,7 +281,8 @@ def gravar_metadados_dynamo(item: dict, ddb_table: str) -> None:
     Requirements: 6.5, 8.5
     """
     # TODO(aluno): usar boto3 para gravar o item na tabela DynamoDB (put_item).
-    raise NotImplementedError("TODO(aluno): implementar gravar_metadados_dynamo()")
+    import boto3
+    boto3.resource("dynamodb").Table(ddb_table).put_item(Item=item)
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +313,7 @@ def main() -> None:
 
     # execution_id único da rodada (usado como chave de partição no DynamoDB).
     execution_id = args["JOB_NAME"] + "-" + str(sc.applicationId)
+    linhas_lidas = 0
 
     try:
         # Passo 2 — Ler o raw e contar linhas_lidas.
@@ -320,11 +347,14 @@ def main() -> None:
         item = montar_metadados(
             execution_id=execution_id,
             dataset=dataset_name,
-            linhas_lidas=0,
+            linhas_lidas=linhas_lidas,
             linhas_gravadas=0,
             status="FALHA",
         )
-        gravar_metadados_dynamo(item, ddb_table)
+        try:
+            gravar_metadados_dynamo(item, ddb_table)
+        except Exception as erro_ddb:
+            print(f"AVISO: não foi possível gravar o registro de FALHA no DynamoDB: {erro_ddb}")
         raise
 
     job.commit()
