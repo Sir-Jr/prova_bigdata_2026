@@ -15,6 +15,7 @@ locals {
   loc_fato        = "${local.gold_path}fato_pedidos/"
   loc_dim_cliente = "${local.gold_path}dim_cliente/"
   loc_dim_produto = "${local.gold_path}dim_produto/"
+  athena_results  = "${local.gold_path}athena-results/"
 }
 
 # ---------------------------------------------------------------------------
@@ -250,4 +251,28 @@ resource "aws_glue_catalog_table" "dim_produto" {
       type = "string"
     }
   }
+}
+
+# ---------------------------------------------------------------------------
+# Athena
+# ---------------------------------------------------------------------------
+resource "aws_athena_workgroup" "gold" {
+  name          = var.athena_workgroup_nome
+  force_destroy = true
+
+  configuration {
+    enforce_workgroup_configuration = true
+    bytes_scanned_cutoff_per_query  = 10485760
+
+    result_configuration {
+      output_location = local.athena_results
+
+      encryption_configuration {
+        encryption_option = "SSE_S3"
+      }
+    }
+  }
+
+  tags       = var.tags
+  depends_on = [terraform_data.bucket_gold]
 }
